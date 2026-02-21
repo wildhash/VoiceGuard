@@ -105,6 +105,50 @@ class TestLightdashClient:
         assert mock_get.call_count == 2
         mock_sleep.assert_called_once()
 
+    def test_run_sql_query_times_out(self):
+        submit_resp = self._mock_response({"results": {"queryUuid": "q-uuid"}})
+        pending_resp = self._mock_response({"results": {}})
+        pending_resp.status_code = 202
+
+        with patch("voiceguard.lightdash.requests.post", return_value=submit_resp), \
+             patch("voiceguard.lightdash.requests.get", return_value=pending_resp), \
+             patch("voiceguard.lightdash.time.monotonic", return_value=1.0):
+            client = self._client()
+            with pytest.raises(TimeoutError, match="Timed out"):
+                client.run_sql_query("SELECT 1", max_wait_seconds=0)
+
+    def test_run_sql_query_honors_retry_after_header(self):
+        submit_resp = self._mock_response({"results": {"queryUuid": "q-uuid"}})
+        pending_resp = self._mock_response({"results": {}})
+        pending_resp.status_code = 202
+        pending_resp.headers = {"Retry-After": "2"}
+        result_resp = self._mock_response({"results": {"rows": [{"avg_satisfaction": 4.5}]}})
+
+        with patch("voiceguard.lightdash.requests.post", return_value=submit_resp), \
+             patch("voiceguard.lightdash.requests.get", side_effect=[pending_resp, result_resp]), \
+             patch("voiceguard.lightdash.time.monotonic", side_effect=[0.0, 0.0]), \
+             patch("voiceguard.lightdash.time.sleep") as mock_sleep:
+            client = self._client()
+            result = client.run_sql_query("SELECT 1")
+
+        assert result == {"rows": [{"avg_satisfaction": 4.5}]}
+        assert mock_sleep.call_args[0][0] == 2.0
+
+    def test_run_sql_query_retries_on_429(self):
+        submit_resp = self._mock_response({"results": {"queryUuid": "q-uuid"}})
+        pending_resp = self._mock_response({"results": {}})
+        pending_resp.status_code = 429
+        result_resp = self._mock_response({"results": {"rows": [{"avg_satisfaction": 4.5}]}})
+
+        with patch("voiceguard.lightdash.requests.post", return_value=submit_resp), \
+             patch("voiceguard.lightdash.requests.get", side_effect=[pending_resp, result_resp]), \
+             patch("voiceguard.lightdash.time.sleep") as mock_sleep:
+            client = self._client()
+            result = client.run_sql_query("SELECT 1")
+
+        assert result == {"rows": [{"avg_satisfaction": 4.5}]}
+        mock_sleep.assert_called_once()
+
     def test_list_dashboards(self):
         dashboards = [{"uuid": "d1", "name": "Agent Dashboard"}]
         resp = self._mock_response({"results": dashboards})

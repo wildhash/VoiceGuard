@@ -60,6 +60,10 @@ class LightdashClient:
             requests.HTTPError: On non-2xx HTTP responses.
             TimeoutError: If the query results are not ready within
                 *max_wait_seconds*.
+
+            Communication failures should surface as ``requests.RequestException``
+            (including ``requests.HTTPError``). Other exceptions (for example,
+            unexpected response shapes) are treated as non-recoverable.
         """
         submit = requests.post(
             f"{self._base}/api/v2/projects/{self._project_uuid}/query/sql",
@@ -87,22 +91,26 @@ class LightdashClient:
                 return payload.get("results", payload)
 
             if result.status_code in {202, 404, 409, 425, 429, 503, 504}:
-                if time.monotonic() >= deadline:
+                now = time.monotonic()
+                if now >= deadline:
                     raise TimeoutError(
                         "Timed out waiting for Lightdash query results "
                         f"(queryUuid={query_uuid}, lastStatus={last_status_code})"
                     )
 
-                retry_after = None
-                try:
-                    retry_after = result.headers.get("Retry-After")
-                except Exception:
-                    retry_after = None
-
+                retry_after = result.headers.get("Retry-After")
                 if isinstance(retry_after, str) and retry_after.isdigit():
                     delay_seconds = max(delay_seconds, float(retry_after))
 
-                time.sleep(delay_seconds)
+                remaining = deadline - now
+                sleep_for = min(delay_seconds, remaining)
+                if sleep_for <= 0:
+                    raise TimeoutError(
+                        "Timed out waiting for Lightdash query results "
+                        f"(queryUuid={query_uuid}, lastStatus={last_status_code})"
+                    )
+
+                time.sleep(sleep_for)
                 delay_seconds = min(delay_seconds * 2, 5)
                 continue
 
