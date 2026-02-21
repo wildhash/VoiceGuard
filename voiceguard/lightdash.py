@@ -13,6 +13,10 @@ import jwt
 import requests
 
 
+class LightdashQueryError(Exception):
+    """Raised when Lightdash query results return an unexpected response."""
+
+
 class LightdashClient:
     """Client for the Lightdash REST API (v1/v2)."""
 
@@ -64,59 +68,67 @@ class LightdashClient:
             Communication failures should surface as ``requests.RequestException``
             (including ``requests.HTTPError``). Other exceptions (for example,
             unexpected response shapes) are treated as non-recoverable.
+
+            Note that *max_wait_seconds* also bounds the underlying HTTP timeouts
+            for both the submit request and each polling request (capped at 30s).
         """
+        submit_timeout = min(30, max(0.1, max_wait_seconds))
         submit = requests.post(
             f"{self._base}/api/v2/projects/{self._project_uuid}/query/sql",
             headers=self._headers,
             json={"sql": sql, "limit": limit, "context": "api"},
-            timeout=30,
+            timeout=submit_timeout,
         )
         submit.raise_for_status()
         query_uuid = submit.json()["results"]["queryUuid"]
 
+        return self._poll_query_results(query_uuid=query_uuid, max_wait_seconds=max_wait_seconds)
+
+    def _poll_query_results(self, query_uuid: str, max_wait_seconds: float) -> dict[str, Any]:
         deadline = time.monotonic() + max_wait_seconds
         delay_seconds = 0.5
-        last_status_code: int | None = None
+
+        pending_status_codes = {202, 425, 429, 503, 504}
+
+        def remaining_or_timeout(last_status: str | int) -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    "Timed out waiting for Lightdash query results "
+                    f"(queryUuid={query_uuid}, lastStatus={last_status})"
+                )
+            return remaining
 
         while True:
+            request_timeout = min(30, remaining_or_timeout("queued"))
             result = requests.get(
                 f"{self._base}/api/v2/projects/{self._project_uuid}/query/{query_uuid}/results",
                 headers=self._headers,
-                timeout=30,
+                timeout=request_timeout,
             )
-            last_status_code = result.status_code
+            status = result.status_code
 
-            if result.status_code == 200:
+            if status == 200:
                 payload = result.json()
-                return payload.get("results", payload)
-
-            if result.status_code in {202, 404, 409, 425, 429, 503, 504}:
-                now = time.monotonic()
-                if now >= deadline:
-                    raise TimeoutError(
-                        "Timed out waiting for Lightdash query results "
-                        f"(queryUuid={query_uuid}, lastStatus={last_status_code})"
+                if not isinstance(payload, dict) or "results" not in payload:
+                    raise LightdashQueryError(
+                        "Unexpected Lightdash response format: missing 'results' "
+                        f"(status={status})"
                     )
+                return payload["results"]
 
+            if status in pending_status_codes:
                 retry_after = result.headers.get("Retry-After")
                 if isinstance(retry_after, str) and retry_after.isdigit():
                     delay_seconds = max(delay_seconds, float(retry_after))
 
-                remaining = deadline - now
-                sleep_for = min(delay_seconds, remaining)
-                if sleep_for <= 0:
-                    raise TimeoutError(
-                        "Timed out waiting for Lightdash query results "
-                        f"(queryUuid={query_uuid}, lastStatus={last_status_code})"
-                    )
-
-                time.sleep(sleep_for)
+                time.sleep(min(delay_seconds, remaining_or_timeout(status)))
                 delay_seconds = min(delay_seconds * 2, 5)
                 continue
 
-            result.raise_for_status()
-            payload = result.json()
-            return payload.get("results", payload)
+            if status >= 400:
+                result.raise_for_status()
+            raise requests.HTTPError(f"Unexpected Lightdash status code: {status}", response=result)
 
     # ------------------------------------------------------------------
     # Dashboard management

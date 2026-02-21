@@ -10,7 +10,7 @@ import requests
 
 from voiceguard.agent import VoiceGuardAgent
 from voiceguard.airia_client import AiriaClient
-from voiceguard.lightdash import LightdashClient
+from voiceguard.lightdash import LightdashClient, LightdashQueryError
 from voiceguard.modulate import ModulateClient
 
 
@@ -110,12 +110,20 @@ class TestLightdashClient:
         pending_resp = self._mock_response({"results": {}})
         pending_resp.status_code = 202
 
+        t = 0.0
+
+        def fake_monotonic() -> float:
+            nonlocal t
+            t += 0.05
+            return t
+
         with patch("voiceguard.lightdash.requests.post", return_value=submit_resp), \
              patch("voiceguard.lightdash.requests.get", return_value=pending_resp), \
-             patch("voiceguard.lightdash.time.monotonic", return_value=1.0):
+             patch("voiceguard.lightdash.time.monotonic", side_effect=fake_monotonic), \
+             patch("voiceguard.lightdash.time.sleep"):
             client = self._client()
             with pytest.raises(TimeoutError, match="Timed out"):
-                client.run_sql_query("SELECT 1", max_wait_seconds=0)
+                client.run_sql_query("SELECT 1", max_wait_seconds=0.1)
 
     def test_run_sql_query_honors_retry_after_header(self):
         submit_resp = self._mock_response({"results": {"queryUuid": "q-uuid"}})
@@ -126,7 +134,6 @@ class TestLightdashClient:
 
         with patch("voiceguard.lightdash.requests.post", return_value=submit_resp), \
              patch("voiceguard.lightdash.requests.get", side_effect=[pending_resp, result_resp]), \
-             patch("voiceguard.lightdash.time.monotonic", side_effect=[0.0, 0.0]), \
              patch("voiceguard.lightdash.time.sleep") as mock_sleep:
             client = self._client()
             result = client.run_sql_query("SELECT 1")
@@ -264,6 +271,13 @@ class TestVoiceGuardAgent:
     def test_run_cycle_lightdash_timeout_is_graceful(self):
         agent, airia, modulate, lightdash = self._make_agent()
         lightdash.run_sql_query.side_effect = TimeoutError("query timed out")
+
+        result = agent.run_cycle("test input")
+        assert result["metrics"] == {}
+
+    def test_run_cycle_lightdash_query_error_is_graceful(self):
+        agent, airia, modulate, lightdash = self._make_agent()
+        lightdash.run_sql_query.side_effect = LightdashQueryError("bad format")
 
         result = agent.run_cycle("test input")
         assert result["metrics"] == {}
