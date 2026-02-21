@@ -89,6 +89,22 @@ class TestLightdashClient:
 
         assert result == {"rows": [{"avg_satisfaction": 4.5}]}
 
+    def test_run_sql_query_polls_until_ready(self):
+        submit_resp = self._mock_response({"results": {"queryUuid": "q-uuid"}})
+        pending_resp = self._mock_response({"results": {}})
+        pending_resp.status_code = 202
+        result_resp = self._mock_response({"results": {"rows": [{"avg_satisfaction": 4.5}]}})
+
+        with patch("voiceguard.lightdash.requests.post", return_value=submit_resp), \
+             patch("voiceguard.lightdash.requests.get", side_effect=[pending_resp, result_resp]) as mock_get, \
+             patch("voiceguard.lightdash.time.sleep") as mock_sleep:
+            client = self._client()
+            result = client.run_sql_query("SELECT 1")
+
+        assert result == {"rows": [{"avg_satisfaction": 4.5}]}
+        assert mock_get.call_count == 2
+        mock_sleep.assert_called_once()
+
     def test_list_dashboards(self):
         dashboards = [{"uuid": "d1", "name": "Agent Dashboard"}]
         resp = self._mock_response({"results": dashboards})
@@ -197,6 +213,13 @@ class TestVoiceGuardAgent:
     def test_run_cycle_lightdash_failure_is_graceful(self):
         agent, airia, modulate, lightdash = self._make_agent()
         lightdash.run_sql_query.side_effect = requests.RequestException("connection error")
+
+        result = agent.run_cycle("test input")
+        assert result["metrics"] == {}
+
+    def test_run_cycle_lightdash_timeout_is_graceful(self):
+        agent, airia, modulate, lightdash = self._make_agent()
+        lightdash.run_sql_query.side_effect = TimeoutError("query timed out")
 
         result = agent.run_cycle("test input")
         assert result["metrics"] == {}

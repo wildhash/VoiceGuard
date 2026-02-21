@@ -72,6 +72,7 @@ class LightdashClient:
 
         deadline = time.monotonic() + max_wait_seconds
         delay_seconds = 0.5
+        last_status_code: int | None = None
 
         while True:
             result = requests.get(
@@ -79,14 +80,17 @@ class LightdashClient:
                 headers=self._headers,
                 timeout=30,
             )
+            last_status_code = result.status_code
 
             if result.status_code == 200:
-                return result.json()["results"]
+                payload = result.json()
+                return payload.get("results", payload)
 
             if result.status_code in {202, 404, 409, 425, 429, 503, 504}:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
-                        f"Timed out waiting for Lightdash query results (queryUuid={query_uuid})"
+                        "Timed out waiting for Lightdash query results "
+                        f"(queryUuid={query_uuid}, lastStatus={last_status_code})"
                     )
 
                 retry_after = None
@@ -103,7 +107,8 @@ class LightdashClient:
                 continue
 
             result.raise_for_status()
-            return result.json()["results"]
+            payload = result.json()
+            return payload.get("results", payload)
 
     # ------------------------------------------------------------------
     # Dashboard management
