@@ -6,6 +6,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from voiceguard.agent import VoiceGuardAgent
 from voiceguard.airia_client import AiriaClient
@@ -72,6 +73,7 @@ class TestLightdashClient:
     def _mock_response(self, data: dict) -> MagicMock:
         resp = MagicMock()
         resp.status_code = 200
+        resp.headers = {}
         resp.json.return_value = data
         resp.raise_for_status.return_value = None
         return resp
@@ -194,7 +196,7 @@ class TestVoiceGuardAgent:
 
     def test_run_cycle_lightdash_failure_is_graceful(self):
         agent, airia, modulate, lightdash = self._make_agent()
-        lightdash.run_sql_query.side_effect = Exception("connection error")
+        lightdash.run_sql_query.side_effect = requests.RequestException("connection error")
 
         result = agent.run_cycle("test input")
         assert result["metrics"] == {}

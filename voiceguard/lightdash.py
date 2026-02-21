@@ -83,14 +83,27 @@ class LightdashClient:
             if result.status_code == 200:
                 return result.json()["results"]
 
-            if result.status_code not in {202, 404, 409}:
-                result.raise_for_status()
+            if result.status_code in {202, 404, 409, 425, 429, 503, 504}:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for Lightdash query results (queryUuid={query_uuid})"
+                    )
 
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"Timed out waiting for Lightdash query results: {query_uuid}")
+                retry_after = None
+                try:
+                    retry_after = result.headers.get("Retry-After")
+                except Exception:
+                    retry_after = None
 
-            time.sleep(delay_seconds)
-            delay_seconds = min(delay_seconds * 2, 5)
+                if isinstance(retry_after, str) and retry_after.isdigit():
+                    delay_seconds = max(delay_seconds, float(retry_after))
+
+                time.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 5)
+                continue
+
+            result.raise_for_status()
+            return result.json()["results"]
 
     # ------------------------------------------------------------------
     # Dashboard management

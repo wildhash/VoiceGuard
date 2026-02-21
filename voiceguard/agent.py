@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Any, BinaryIO
 
+import requests
+
 from voiceguard.airia_client import AiriaClient
 from voiceguard.lightdash import LightdashClient
 from voiceguard.modulate import ModulateClient
@@ -112,7 +114,7 @@ class VoiceGuardAgent:
         """Return today's aggregate performance metrics from Lightdash."""
         try:
             return self._lightdash.run_sql_query(METRICS_SQL)
-        except Exception:
+        except (requests.RequestException, TimeoutError):
             logger.warning("Could not fetch Lightdash metrics", exc_info=True)
             return {}
 
