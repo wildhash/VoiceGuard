@@ -80,14 +80,11 @@ class LightdashClient:
                 timeout=30,
             )
 
-            try:
-                result.raise_for_status()
-            except requests.HTTPError as exc:
-                status = exc.response.status_code if exc.response is not None else None
-                if status not in {202, 404, 409}:
-                    raise
-            else:
+            if result.status_code == 200:
                 return result.json()["results"]
+
+            if result.status_code not in {202, 404, 409}:
+                result.raise_for_status()
 
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Timed out waiting for Lightdash query results: {query_uuid}")

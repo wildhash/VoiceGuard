@@ -71,6 +71,7 @@ class TestLightdashClient:
 
     def _mock_response(self, data: dict) -> MagicMock:
         resp = MagicMock()
+        resp.status_code = 200
         resp.json.return_value = data
         resp.raise_for_status.return_value = None
         return resp
