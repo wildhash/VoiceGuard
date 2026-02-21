@@ -6,6 +6,7 @@ and JWT-based dashboard embedding.
 
 import datetime
 import os
+import time
 from typing import Any
 
 import jwt
@@ -35,7 +36,12 @@ class LightdashClient:
     # SQL query execution (v2 — async pattern)
     # ------------------------------------------------------------------
 
-    def run_sql_query(self, sql: str, limit: int = 500) -> dict[str, Any]:
+    def run_sql_query(
+        self,
+        sql: str,
+        limit: int = 500,
+        max_wait_seconds: float = 30,
+    ) -> dict[str, Any]:
         """Execute *sql* and return the full results dict.
 
         Uses the two-step v2 async pattern: submit the query, then fetch
@@ -44,12 +50,16 @@ class LightdashClient:
         Args:
             sql: SQL query string.
             limit: Maximum number of rows to return (default 500).
+            max_wait_seconds: Maximum time to wait for results before raising
+                :class:`TimeoutError`.
 
         Returns:
             The ``results`` value from the Lightdash response envelope.
 
         Raises:
             requests.HTTPError: On non-2xx HTTP responses.
+            TimeoutError: If the query results are not ready within
+                *max_wait_seconds*.
         """
         submit = requests.post(
             f"{self._base}/api/v2/projects/{self._project_uuid}/query/sql",
@@ -60,13 +70,30 @@ class LightdashClient:
         submit.raise_for_status()
         query_uuid = submit.json()["results"]["queryUuid"]
 
-        result = requests.get(
-            f"{self._base}/api/v2/projects/{self._project_uuid}/query/{query_uuid}/results",
-            headers=self._headers,
-            timeout=30,
-        )
-        result.raise_for_status()
-        return result.json()["results"]
+        deadline = time.monotonic() + max_wait_seconds
+        delay_seconds = 0.5
+
+        while True:
+            result = requests.get(
+                f"{self._base}/api/v2/projects/{self._project_uuid}/query/{query_uuid}/results",
+                headers=self._headers,
+                timeout=30,
+            )
+
+            try:
+                result.raise_for_status()
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status not in {202, 404, 409}:
+                    raise
+            else:
+                return result.json()["results"]
+
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for Lightdash query results: {query_uuid}")
+
+            time.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 2, 5)
 
     # ------------------------------------------------------------------
     # Dashboard management
